@@ -11,13 +11,14 @@ My North Star:
 
 Remdesivir, a well-known [antiviral drug](https://www.google.com/search?q=remdesivir&oq=remdesivir&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQABiABDIHCAIQABiABDIHCAMQABiABDIHCAQQABiABDIHCAUQABiABDIHCAYQABiABDIHCAcQABiABDIHCAgQABiABDIHCAkQABiPAtIBCDE4NjhqMGo5qAIAsAIB&sourceid=chrome&ie=UTF-8) targeting the RNA-dependent RNA polymerase enzyme, a key Target when designing antiviral drugs. 
 
-![800px-Remdesivir svg](https://github.com/user-attachments/assets/6f5e02ed-188f-4be2-9731-8d09f14df1f1)
+![image](https://github.com/user-attachments/assets/bd9ef576-216c-4fea-bf3c-80e87389dcee)
+
 
 The result: constellations, drugs that will exist in this latent space, close to the North Star's "area" of properties and effects, but dissimilar in terms of structure. 
 
 Two candidate leads, in the three-dimensional pocket of the enzyme that makes up the core of its activity:
 
-![image](https://github.com/user-attachments/assets/9892dadf-899a-4f0a-8be1-4ffae0685ee6)
+  ![image](https://github.com/user-attachments/assets/9892dadf-899a-4f0a-8be1-4ffae0685ee6)
 
 The pipeline:
 
