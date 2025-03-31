@@ -9,7 +9,7 @@ The generation of lead candidates is not a result of random sampling of the late
 
 My North Star:
 
-Remdesivir, a well-known [antiviral drug](https://www.google.com/search?q=remdesivir&oq=remdesivir&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQABiABDIHCAIQABiABDIHCAMQABiABDIHCAQQABiABDIHCAUQABiABDIHCAYQABiABDIHCAcQABiABDIHCAgQABiABDIHCAkQABiPAtIBCDE4NjhqMGo5qAIAsAIB&sourceid=chrome&ie=UTF-8) targeting the RNA-dependent RNA polymerase enzyme 
+Remdesivir, a well-known [antiviral drug](https://www.google.com/search?q=remdesivir&oq=remdesivir&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQABiABDIHCAIQABiABDIHCAMQABiABDIHCAQQABiABDIHCAUQABiABDIHCAYQABiABDIHCAcQABiABDIHCAgQABiABDIHCAkQABiPAtIBCDE4NjhqMGo5qAIAsAIB&sourceid=chrome&ie=UTF-8) targeting the RNA-dependent RNA polymerase enzyme, a key Target when designing antiviral drugs. 
 
 ![800px-Remdesivir svg](https://github.com/user-attachments/assets/6f5e02ed-188f-4be2-9731-8d09f14df1f1)
 
@@ -22,3 +22,6 @@ Two candidate leads, in the three-dimensional pocket of the enzyme that makes up
 The pipeline:
 
 ![image](https://github.com/user-attachments/assets/1bf9b223-c2e1-4394-a4fa-659038ff0079)
+
+The architecture:
+![image](https://github.com/user-attachments/assets/0411341a-5e33-4b3e-8c0c-e0b1ac4e6e4f)
