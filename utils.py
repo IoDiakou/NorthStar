@@ -1,132 +1,232 @@
-import h5py
+"""Validated data preparation, vocabulary persistence, and candidate handling."""
+from collections import Counter
+import hashlib
+import json
+from pathlib import Path
+import warnings
+
 import numpy as np
 from rdkit import Chem
+from rdkit.Chem.Crippen import MolLogP
+from rdkit.Chem.Descriptors import ExactMolWt
+from rdkit.Chem.rdMolDescriptors import CalcTPSA
 
-def conv_to_smiles(vector, char):
-    list_char = list(char)
-    #list_char = char.tolist()
-    vector = vector.astype(int)
-    return "".join(map(lambda x: list_char[x], vector)).strip()
+START_TOKEN = 'X'
+END_TOKEN = 'E'
+PROPERTY_NAMES = ['MW', 'LogP', 'TPSA']
 
-def stochastic_conv_to_smiles(vector, char):
-    list_char = char.tolist()
-    s = ""
-    for i in range(len(vector)):
-        prob = vector[i].tolist()
-        norm0 = sum(prob)
-        prob = [i/norm0 for i in prob]
-        index = np.random.choice(len(list_char), 1, p=prob)
-        s+=list_char[index[0]]
-    return s
 
-def one_hot_array(i, n):
-    return list(map(int, [ix == i for ix in range(n)]))
+def positive_int(value):
+    value = int(value)
+    if value < 1:
+        raise ValueError('Must be a positive integer.')
+    return value
 
-def one_hot_index(vec, charset):
-    return list(map(charset.index, vec))
 
-def from_one_hot_array(vec):
-    oh = np.where(vec == 1)
-    if oh[0].shape == (0, ):
+def positive_float(value):
+    value = float(value)
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError('Must be a finite, positive number.')
+    return value
+
+
+def read_property_records(filename, seq_length=120, num_prop=3, legacy=False):
+    """Read headerless SMILES + numeric properties, retaining source line numbers.
+
+    legacy=True reproduces the original final-line slicing for vocabulary
+    recovery ONLY; new training must leave this disabled.
+    """
+    if seq_length < 3:
+        raise ValueError('seq_length must be at least 3.')
+    raw = Path(filename).read_text(encoding='utf-8')
+    lines = raw.split('\n')[:-1] if legacy else raw.splitlines()
+    smiles, properties, source_lines = [], [], []
+    too_long = 0
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        fields = line.split()
+        if len(fields) != num_prop + 1:
+            raise ValueError(f'{filename}:{line_number}: expected SMILES and {num_prop} properties.')
+        try:
+            values = np.asarray(fields[1:], dtype=np.float32)
+        except ValueError as exc:
+            raise ValueError(f'{filename}:{line_number}: properties must be numeric; omit headers.') from exc
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f'{filename}:{line_number}: properties must be finite.')
+        # Retain the original length threshold to preserve legacy vocabularies.
+        if len(fields[0]) >= seq_length - 2:
+            too_long += 1
+            continue
+        smiles.append(fields[0])
+        properties.append(values)
+        source_lines.append(line_number)
+    if too_long:
+        warnings.warn(f'Skipped {too_long} molecules exceeding the sequence-length limit.', stacklevel=2)
+    if not smiles:
+        raise ValueError(f'{filename}: no usable molecular records.')
+    return smiles, np.asarray(properties, dtype=np.float32), source_lines
+
+
+def build_vocabulary(smiles):
+    """Preserve the original frequency ordering, including first-seen tie order."""
+    counts = Counter(''.join(smiles))
+    chars = [char for char, _ in sorted(counts.items(), key=lambda item: -item[1])]
+    if START_TOKEN in chars or END_TOKEN in chars:
+        raise ValueError('Input contains reserved X/E sequence characters; tokenization must be extended.')
+    return chars + [END_TOKEN, START_TOKEN]
+
+
+def validate_vocabulary(chars):
+    if (not isinstance(chars, list) or not chars
+            or any(not isinstance(c, str) or len(c) != 1 for c in chars)
+            or len(chars) != len(set(chars))
+            or not {START_TOKEN, END_TOKEN}.issubset(chars)):
+        raise ValueError('Invalid saved character vocabulary.')
+    return {char: index for index, char in enumerate(chars)}
+
+
+def encode_records(smiles, chars, seq_length):
+    vocab = validate_vocabulary(list(chars))
+    unknown = set(''.join(smiles)) - set(vocab)
+    if unknown:
+        raise ValueError(f'Characters absent from saved vocabulary: {sorted(unknown)}')
+    lengths = np.asarray([len(s) + 1 for s in smiles], dtype=np.int32)
+    if np.any(lengths > seq_length):
+        raise ValueError('Input sequence exceeds seq_length.')
+    x = np.asarray([[vocab[c] for c in (START_TOKEN + s).ljust(seq_length, END_TOKEN)]
+                    for s in smiles], dtype=np.int32)
+    y = np.asarray([[vocab[c] for c in s.ljust(seq_length, END_TOKEN)]
+                    for s in smiles], dtype=np.int32)
+    return x, y, lengths
+
+
+def load_datasource(filename, seq_length, chars=None, num_prop=3):
+    smiles, properties, _ = read_property_records(filename, seq_length, num_prop)
+    chars = build_vocabulary(smiles) if chars is None else list(chars)
+    x, y, lengths = encode_records(smiles, chars, seq_length)
+    return x, y, tuple(chars), validate_vocabulary(chars), properties, lengths
+
+
+# Backward-compatible names for callers of the original entry points.
+load_data = load_datasource
+
+
+def conv_to_smiles(vector, chars):
+    tokens = np.asarray(vector)
+    if tokens.ndim != 1:
+        raise ValueError('Expected one 1D token sequence.')
+    result = []
+    for index in tokens:
+        index = int(index)
+        if index < 0 or index >= len(chars):
+            raise ValueError(f'Token index {index} is outside the saved vocabulary.')
+        char = chars[index]
+        if char == END_TOKEN:
+            break
+        if char == START_TOKEN:
+            # A generated start marker is invalid; never silently reinterpret it.
+            return ''
+        result.append(char)
+    return ''.join(result).strip()
+
+
+convert_to_smiles = conv_to_smiles
+
+
+def canonical_molecule(smiles):
+    if not smiles or not smiles.strip():
         return None
-    return int(oh[0][0])
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    return Chem.MolToSmiles(mol, isomericSmiles=True), mol
 
-def decode_smiles_from_ind(vec, charset):
-    return "".join(map(lambda x: charset[x], vec)).strip()
 
-def load_dataset(filename, split = True):
-    h5f = h5py.File(filename, 'r')
-    if split:
-        data_train = h5f['data_train'][:]
-    else:
-        data_train = None
-    data_test = h5f['data_test'][:]
-    charset = h5f['charset'][:]
-    h5f.close()
-    if split:
-        return data_train, data_test, charset
-    else:
-        return data_test, charset
+def candidate_records(smiles):
+    """Canonicalize before deduplication; retain first-seen order and statistics."""
+    records = []
+    seen = set()
+    stats = {'attempted': 0, 'valid': 0, 'unique': 0, 'invalid': 0, 'duplicates': 0}
+    for value in smiles:
+        stats['attempted'] += 1
+        parsed = canonical_molecule(value)
+        if parsed is None:
+            stats['invalid'] += 1
+            continue
+        canonical, mol = parsed
+        stats['valid'] += 1
+        if canonical in seen:
+            stats['duplicates'] += 1
+            continue
+        seen.add(canonical)
+        records.append((canonical, ExactMolWt(mol), MolLogP(mol), CalcTPSA(mol)))
+    stats['unique'] = len(records)
+    return records, stats
 
-def encode_smiles(smiles, model, charset):
-    cropped = list(smiles.ljust(120))
-    preprocessed = np.array([list(map(lambda x: one_hot_array(x, len(charset)), one_hot_index(cropped, charset)))])
-    latent = model.encoder.predict(preprocessed)
-    return latent
 
-def smiles_to_onehot(smiles, charset):
-    cropped = list(smiles.ljust(120))
-    preprocessed = np.array([list(map(lambda x: one_hot_array(x, len(charset)), one_hot_index(cropped, charset)))])
-    return preprocessed
+def split_indices(smiles, validation_fraction=0.25, seed=42):
+    """Seeded split by canonical structure, keeping duplicate molecules together."""
+    if not 0 < validation_fraction < 1:
+        raise ValueError('validation_fraction must be between 0 and 1.')
+    groups = {}
+    for index, value in enumerate(smiles):
+        parsed = canonical_molecule(value)
+        if parsed is None:
+            raise ValueError(f'Invalid training SMILES at record {index + 1}: {value!r}')
+        groups.setdefault(parsed[0], []).append(index)
+    keys = list(groups)
+    if len(keys) < 2:
+        raise ValueError('Need at least two distinct molecules for training and validation.')
+    shuffled = np.random.default_rng(seed).permutation(len(keys))
+    count = min(len(keys) - 1, max(1, int(round(len(keys) * validation_fraction))))
+    validation_keys = {keys[i] for i in shuffled[:count]}
+    validation = [i for k, values in groups.items() if k in validation_keys for i in values]
+    training = [i for k, values in groups.items() if k not in validation_keys for i in values]
+    return np.asarray(sorted(training), dtype=np.int64), np.asarray(sorted(validation), dtype=np.int64)
 
-def smiles_to_vector(smiles, vocab, max_length):
-    while len(smiles)<max_length:
-        smiles +=" "
-    return [vocab.index(str(x)) for x in smiles]
 
-def decode_latent_molecule(latent, model, charset, latent_dim):
-    decoded = model.decoder.predict(latent.reshape(1, latent_dim)).argmax(axis=2)[0]
-    smiles = decode_smiles_from_ind(decoded, charset)
-    return smiles
+def iter_batches(indices, batch_size):
+    for start in range(0, len(indices), batch_size):
+        yield indices[start:start + batch_size]
 
-def interpolate(source_smiles, dest_smiles, steps, charset, model, latent_dim):
-    source_latent = encode_smiles(source_smiles, model, charset)
-    dest_latent = encode_smiles(dest_smiles, model, charset)
-    step = (dest_latent - source_latent) / float(steps)
-    results = []
-    for i in range(steps):
-        item = source_latent + (step * i)        
-        decoded = decode_latent_molecule(item, model, charset, latent_dim)
-        results.append(decoded)
-    return results
 
-def get_unique_mols(mol_list):
-    inchi_keys = [Chem.InchiToInchiKey(Chem.MolToInchi(m)) for m in mol_list]
-    u, indices = np.unique(inchi_keys, return_index=True)
-    unique_mols = [[mol_list[i], inchi_keys[i]] for i in indices]
-    return unique_mols
+def file_sha256(filename):
+    digest = hashlib.sha256()
+    with open(filename, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-def accuracy(arr1, arr2, length):
-    total = len(arr1)
-    count1=0
-    count2=0
-    count3=0
-    for i in range(len(arr1)):
-        if np.array_equal(arr1[i,:length[i]], arr2[i,:length[i]]):
-            count1+=1
-    for i in range(len(arr1)):
-        for j in range(length[i]):
-            if arr1[i][j]==arr2[i][j]:
-                count2+=1
-            count3+=1
 
-    return float(count1/float(total)), float(count2/count3)
+def save_json(filename, value):
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 
-def load_datasource(n, seq_length):
-    import collections
-    f = open(n)
-    lines = f.read().split('\n')[:-1]
-    lines = [l.split() for l in lines]
-    lines = [l for l in lines if len(l[0])<seq_length-2]
-    smiles = [l[0] for l in lines]
-    
-    total_string = ''
-    for s in smiles:
-        total_string+=s
-    counter = collections.Counter(total_string)
-    count_pairs = sorted(counter.items(), key=lambda x: -x[1])
-    chars, counts = zip(*count_pairs)
-    vocab = dict(zip(chars, range(len(chars))))
 
-    chars+=('E',) #tag end
-    chars+=('X',) #tag start
-    vocab['E'] = len(chars)-2
-    vocab['X'] = len(chars)-1
-    
-    length = np.array([len(s)+1 for s in smiles])
-    smiles_input = [('X'+s).ljust(seq_length, 'E') for s in smiles] 
-    smiles_output = [s.ljust(seq_length, 'E') for s in smiles] 
-    smiles_input = np.array([np.array(list(map(vocab.get, s)))for s in smiles_input])
-    smiles_output = np.array([np.array(list(map(vocab.get, s)))for s in smiles_output])
-    prop = np.array([l[1:] for l in lines])
-    return smiles_input, smiles_output, chars, vocab, prop, length 
+def load_metadata(filename):
+    data = json.loads(Path(filename).read_text(encoding='utf-8'))
+    if data.get('format_version') != 1:
+        raise ValueError('Unsupported metadata format version.')
+    validate_vocabulary(data.get('vocabulary'))
+    if data.get('property_names') != PROPERTY_NAMES:
+        raise ValueError('Expected property order MW, LogP, TPSA.')
+    if data.get('property_transform') != 'none':
+        raise ValueError('Unsupported property transform; do not mix scaled and raw properties.')
+    if data.get('embedding_layout') != 'legacy_latent_by_vocab':
+        raise ValueError('Unsupported embedding layout.')
+    for key in ('latent_size', 'unit_size', 'n_rnn_layer', 'seq_length', 'num_prop'):
+        if not isinstance(data.get('model', {}).get(key), int) or data['model'][key] <= 0:
+            raise ValueError(f'Missing or invalid saved model setting: {key}')
+    for key in ('mean', 'stddev', 'lr'):
+        value = data['model'].get(key)
+        if not isinstance(value, (int, float)) or not np.isfinite(value):
+            raise ValueError(f'Missing or invalid saved distribution/optimizer setting: {key}')
+    if data['model']['stddev'] <= 0 or data['model']['lr'] <= 0:
+        raise ValueError('Saved stddev and learning rate must be positive.')
+    if data['model']['seq_length'] < 3:
+        raise ValueError('Saved seq_length must be at least 3.')
+    if data['model']['num_prop'] != len(PROPERTY_NAMES):
+        raise ValueError('Saved model must have three property conditions.')
+    return data

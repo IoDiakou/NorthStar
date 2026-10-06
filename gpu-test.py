@@ -1,4 +1,13 @@
-import tensorflow as tf
+"""Print the TensorFlow version and detected physical GPUs."""
 
-print("Num GPUs Available: ", len(tf.compat.v1.config.list_physical_devices('GPU')))
+def main():
+    import tensorflow as tf
+    devices = tf.config.list_physical_devices('GPU')
+    print('TensorFlow:', tf.__version__)
+    print('Number of GPUs:', len(devices))
+    for device in devices:
+        print(device)
 
+
+if __name__ == '__main__':
+    main()

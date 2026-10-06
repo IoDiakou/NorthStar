@@ -1,0 +1,8 @@
+# Installation-verified CPU baseline: Linux x86_64, Python 3.11.16.
+# Full TensorFlow runtime tests still need a supported host.
+# The original TF1-compatible RNN APIs require this legacy TensorFlow/Keras line.
+tensorflow-cpu==2.15.1
+tensorflow-addons==0.23.0
+numpy==1.26.4
+rdkit==2023.9.6
+h5py==3.10.0

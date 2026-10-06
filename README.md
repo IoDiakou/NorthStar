@@ -42,7 +42,7 @@ Training combines a sequence reconstruction objective with a Kullback–Leibler 
 
 The generation script samples latent vectors from a normal distribution and supplies a target property vector to the decoder. The reference profile guides generation through **property conditioning**; the published script does not explicitly sample around the encoded coordinates of a reference molecule.
 
-Generated sequences are converted to SMILES, duplicate strings are removed, and RDKit is used to retain parseable molecular structures. The output includes SMILES and recalculated molecular descriptors.
+Generated sequences are converted to SMILES, RDKit retains valid nonempty molecular structures, and duplicates are removed after canonicalization. The output includes SMILES and recalculated molecular descriptors.
 
 ### 4. Assess molecular interactions
 
@@ -73,7 +73,7 @@ The implementation uses recurrent sequence models for both encoding and decoding
 | Training objective | Reconstruction loss + KL regularization |
 | Optimizer | Adam |
 
-*Values reflect the default configuration. Some settings are exposed through command-line arguments; the decoder state initialization currently assumes three layers.*
+*Values reflect the default configuration. Settings are exposed through command-line arguments; decoder state depth follows the configured layer count.*
 
 ![CVAE architecture showing the LSTM encoder, latent space, and LSTM decoder.](https://github.com/user-attachments/assets/0411341a-5e33-4b3e-8c0c-e0b1ac4e6e4f)
 
@@ -96,43 +96,84 @@ The original research overview presents two candidate molecules positioned withi
 | `prop_calc_module_basis.py` | RDKit descriptor calculation from SMILES |
 | `utils.py` | Sequence preparation and molecular representation utilities |
 | `gpu-test.py` | GPU diagnostic script |
-| `test.py` | Data preparation utility that extracts alternating input lines |
+| `test.py` | Legacy data preparation utility that extracts alternating input lines |
+| `run_tests.py` | Regression test runner; add `--model` for TensorFlow integration tests |
+| `legacy_utils.py` | Archived helpers for older model interfaces |
 
-## Running and reproducing the work
+## Getting started
 
-This repository currently contains a **research implementation** of the molecular generation component. A fully specified, end-to-end reproduction environment is not yet included.
+The scripts support descriptor preparation, model training, and candidate generation.
+Research datasets, trained checkpoints, and downstream docking/pharmacophore
+protocols are not included.
 
-### Software components
+### Installation
 
-The scripts use Python, TensorFlow with TensorFlow 1.x compatibility APIs, TensorFlow Addons, RDKit, NumPy, and h5py. A tested dependency lockfile is not supplied, so compatible versions must be established before running the model.
-
-### Input and output formats
-
-The descriptor preparation script accepts a text file containing one SMILES string per line. With RDKit installed, its command-line interface is:
+Use Python 3.11 in a fresh virtual environment:
 
 ```bash
-python prop_calc_module_basis.py \
-  --input_filename smiles.txt \
-  --output_filename smiles_prop.txt
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-lock.txt
 ```
 
-The resulting training-data file contains tab-separated values in this order, without a header:
+The lockfile targets a Linux x86_64 CPU environment with TensorFlow 2.15,
+TensorFlow Addons 0.23, and RDKit. Direct dependencies are listed in
+`requirements.txt`.
 
-```text
-SMILES    exact_molecular_weight    logP    TPSA
+On Windows, create the environment with `py -3.11 -m venv .venv` and activate it
+with `.venv\Scripts\Activate.ps1` in PowerShell. Platform-specific dependency
+adjustments may be needed.
+
+### Try a small example
+
+```bash
+python prop_calc_module_basis.py --input_filename examples/smiles.txt --output_filename examples/smiles_prop.tsv
+python core_train.py --prop_file examples/smiles_prop.tsv --save_dir runs/demo --num_epochs 1 --batch_size 7 --latent_size 24 --unit_size 8 --n_rnn_layer 2 --seq_length 32
+python constellating.py --save_file runs/demo --target_prop "46 0 20" --batch_size 1 --num_iteration 10 --result_filename runs/demo/candidates.tsv
 ```
 
-Candidate generation requires a compatible trained checkpoint, the vocabulary derived from the property dataset, and target properties in the same order. Its exported table contains `smiles`, `MW`, `LogP`, and `TPSA` columns.
+Use a new output directory and result filename for each run.
 
-### Current reproduction requirements
+The fixture molecules and target values demonstrate the software interface;
+they are not a research dataset or a Remdesivir reference profile. A tiny model
+trained for one epoch may produce no valid candidates.
 
-Before training and generation can be run as documented entry points, the following naming inconsistencies need to be resolved:
+### Data and saved outputs
 
-- Training and generation import `CVAE` from `model`, while its definition is supplied in `core_architecture.py`.
-- Both scripts call `load_data`, while the corresponding preparation function in `utils.py` is named `load_datasource`.
-- Generation calls `convert_to_smiles`, while the available conversion helper is named `conv_to_smiles`.
+Descriptor preparation accepts one SMILES string per line and writes a
+headerless, tab-separated file in the order **SMILES, MW, logP, TPSA**. The model
+uses raw descriptors without normalization.
 
-The repository also does not currently include the training datasets, pretrained checkpoints, or the downstream docking and pharmacophore protocols. These materials and a verified environment are needed for full reproduction.
+Training saves checkpoints, vocabulary, architecture settings, source-data hash,
+retained source-line mapping, split indices, and loss history. Generation reads
+the checkpoint's metadata sidecar and exports canonical, unique molecules with
+recalculated descriptors plus a statistics JSON. It requires no training dataset
+when saved metadata is available.
+
+### Checkpoints without metadata
+
+For a checkpoint without a metadata sidecar, provide the exact training property
+file used to construct its vocabulary:
+
+```bash
+python constellating.py --save_file path/to/checkpoint-prefix --legacy_checkpoint --prop_file path/to/training-properties.txt --target_prop "46 0 20" --result_filename candidates.tsv
+```
+
+Use the checkpoint prefix without `.index` or `.data-*` extensions. Supply
+`--latent_size`, `--unit_size`, `--n_rnn_layer`, and `--seq_length` if the trained
+model differs from the defaults. Vocabulary identity depends on the original
+training file; matching tensor shapes alone cannot verify it.
+
+### Tests
+
+```bash
+python run_tests.py
+python run_tests.py --model
+```
+
+The first command runs the data and helper tests. The second additionally runs
+TensorFlow training, generation, and checkpoint-compatibility tests on a host
+that supports TensorFlow sessions.
 
 ## Scope and interpretation
 
